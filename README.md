@@ -9,7 +9,7 @@ Amlogic bootrom supports booting from USB. This method of boot requires an USB h
 This tool exploits a vulnerability in the USB download mode to load and run unsigned code in Secure World.
 
 ## Supported targets
-* Khadas VIM3L (S905D3)
+* Khadas VIM3L (S905D3) (Secure boot is disabled anyway)
 * Chromecast with Google TV (S905D3G)
 
 ## Usage
