@@ -10,7 +10,7 @@ BIN   = amlogic-usbdl
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BIN): $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LDLIBS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 .PHONY: clean
 clean:
