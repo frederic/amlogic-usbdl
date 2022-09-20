@@ -1,4 +1,4 @@
-CROSS_COMPILER ?= ~/tools/cross/gcc-linaro-5.3.1-2016.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-
+CROSS_COMPILER ?= aarch64-linux-gnu-# gcc-linaro-5.3.1-2016.05-x86_64_aarch64-linux-gnu
 CC      = $(CROSS_COMPILER)gcc
 OBJCOPY = $(CROSS_COMPILER)objcopy
 AFLAGS  = -nostdlib
